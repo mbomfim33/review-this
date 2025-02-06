@@ -59,11 +59,26 @@ get_file_diff() {
 # Function to query Ollama for review
 query_ollama() {
     local diff="$1"
-    # local prompt="Review this git diff and provide a concise analysis of the changes. If there are no significant changes or concerns, respond with 'N/A'. Here's the diff:\n\n$diff"
-    local prompt="You are a code reviewer analyzing a git diff. Your task is to review the changes and:
+    local prompt="You are a code reviewer analyzing a git diff. You must follow these response rules exactly:
 
-1. If there are significant changes or potential issues (security, performance, or best practices), provide a CONCISE bullet-point list of your findings
-2. If there are no significant changes or concerns, respond ONLY with 'N/A' (no other text)
+RESPONSE FORMAT:
+1. If there are ANY issues (security, performance, best practices, or code quality): 
+   - Respond with ONLY a bullet point list
+   - Each bullet point should state the issue and its rationale
+   - No introduction or conclusion text
+
+2. If there are NO issues:
+   - Respond with ONLY the exact text: N/A
+   - No other text or explanation
+
+Example good responses:
+- For issues:
+• useState dependency missing in useEffect - could cause stale closures
+• Array index used as key - may cause rendering issues
+• Inline styles reduce performance - should use CSS classes
+
+- For no issues:
+N/A
 
 Here's the diff to review:\n\n$diff"
     
