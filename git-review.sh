@@ -1,15 +1,14 @@
 #!/bin/bash
 
 # Configuration
-OLLAMA_MODEL="codellama"
+OLLAMA_MODEL="codellama" 
+TEMPERATURE=0.7  # This is the default temperature 🥵
 REVIEW_FILE="review_results.json"
 DEBUG=false
 
-# Parse command line arguments
 parse_args() {
-    COMPARE_MODE="current"  # Default to current changes
-    COMPARE_BRANCH="develop"  # Default branch to compare against
-    
+    COMPARE_MODE="current"  
+    COMPARE_BRANCH="develop"     
     while [[ $# -gt 0 ]]; do
         case $1 in
             --mode|-m)
@@ -20,6 +19,19 @@ parse_args() {
                 COMPARE_BRANCH="$2"
                 shift 2
                 ;;
+            --model|-ml)
+                OLLAMA_MODEL="$2"
+                shift 2
+                ;;
+            --temperature|-t)
+                if [[ "$2" =~ ^[0-9]*\.?[0-9]+$ ]] && (( $(echo "$2 >= 0" | bc -l) )) && (( $(echo "$2 <= 2" | bc -l) )); then
+                    TEMPERATURE="$2"
+                else
+                    echo "Error: Temperature must be a number between 0 and 2"
+                    exit 1
+                fi
+                shift 2
+                ;;
             --debug|-d)
                 DEBUG=true
                 shift 1
@@ -27,9 +39,11 @@ parse_args() {
             --help|-h)
                 echo "Usage: git-review [options]"
                 echo "Options:"
-                echo "  --mode, -m    Compare mode: 'current' (unstaged changes) or 'branch' (compare with branch)"
-                echo "  --branch, -b  Branch to compare against (default: develop)"
-                echo "  --debug, -d   Enable debug output"
+                echo "  --mode, -m          Compare mode: 'current' (unstaged changes) or 'branch' (compare with branch)"
+                echo "  --branch, -b        Branch to compare against (default: develop)"
+                echo "  --model, -ml        Ollama model to use (default: codellama)"
+                echo "  --temperature, -t   Model temperature (default: 0.7, range: 0-2)"
+                echo "  --debug, -d         Enable debug output"
                 exit 0
                 ;;
             *)
@@ -117,7 +131,6 @@ determine_severity() {
     fi
 }
 
-# Function to query Ollama for review
 query_ollama() {
     local diff="$1"
     local prompt="You are a code reviewer analyzing a git diff. You must follow these response rules exactly:
@@ -143,16 +156,18 @@ N/A
 
 Here's the diff to review:\n\n$diff"
     
-    debug_log "Querying Ollama for review"
+    debug_log "Querying Ollama (model: $OLLAMA_MODEL, temperature: $TEMPERATURE)"
     
     response=$(curl -s http://localhost:11434/api/generate -d "{
         \"model\": \"$OLLAMA_MODEL\",
         \"prompt\": $(echo "$prompt" | jq -R -s .),
+        \"temperature\": $TEMPERATURE,
         \"stream\": false
     }" | jq -r '.response' || echo "Error querying Ollama")
     
     echo "$response"
 }
+
 
 # Function to generate markdown report
 generate_markdown() {
@@ -170,7 +185,8 @@ generate_markdown() {
     curl -s http://localhost:11434/api/generate -d "{
         \"model\": \"$OLLAMA_MODEL\",
         \"prompt\": $(echo "$prompt" | jq -R -s .),
-        \"stream\": false
+        \"stream\": false,
+        \"stop\": [\"<think></think>\"]
     }" | jq -r '.response' > "$markdown_file"
     
     echo "Markdown report generated: $markdown_file"
