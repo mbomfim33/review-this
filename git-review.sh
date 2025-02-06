@@ -119,18 +119,6 @@ get_file_diff() {
     fi
 }
 
-# Function to determine issue severity
-determine_severity() {
-    local response="$1"
-    if echo "$response" | grep -qi "security\|vulnerability\|exploit"; then
-        echo "high"
-    elif echo "$response" | grep -qi "performance\|memory leak\|complexity"; then
-        echo "medium"
-    else
-        echo "low"
-    fi
-}
-
 query_ollama() {
     local diff="$1"
     local prompt="You are a code reviewer analyzing a git diff. You must follow these response rules exactly:
@@ -175,7 +163,6 @@ generate_markdown() {
     local markdown_file="${json_file%.json}.md"
     
     local prompt="Convert this JSON code review report into a well-formatted markdown document. 
-    Group issues by severity (high, medium, low). 
     Include file names as headers. 
     Format code-related terms with backticks.
     Here's the JSON:\n\n$(cat "$json_file")"
@@ -232,17 +219,14 @@ main() {
             if [ -n "$diff" ]; then
                 # Get AI review
                 review=$(query_ollama "$diff")
-                severity=$(determine_severity "$review")
                 
                 # Add to JSON array
                 jq --arg file "$file" \
                    --arg review "$review" \
-                   --arg severity "$severity" \
                    --arg timestamp "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
                    '. += [{
                        "file": $file,
                        "review": $review,
-                       "severity": $severity,
                        "timestamp": $timestamp
                    }]' "$REVIEW_FILE" > temp.json && mv temp.json "$REVIEW_FILE"
             fi
