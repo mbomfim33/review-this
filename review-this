@@ -1,14 +1,37 @@
 #!/bin/bash
 
-# Configuration
-OLLAMA_MODEL="codellama" 
-TEMPERATURE=0.7  # This is the default temperature 🥵
-REVIEW_FILE="review_results.json"
-DEBUG=false
+################################################################################
+# review-this - Code review tool using Ollama
+# 
+# This script analyzes git changes (either unstaged or between branches) and 
+# provides automated code review feedback using Ollama's AI models.
+#
+# Dependencies:
+# - git
+# - curl
+# - jq
+# - Ollama running locally with the codellama model
+################################################################################
 
+#===================================
+# Configuration
+#===================================
+OLLAMA_MODEL="codellama"      # AI model to use for code review
+TEMPERATURE=0.7               # Model temperature for response generation
+REVIEW_FILE="review_results.json"  # Output file for review results
+DEBUG=false                   # Debug mode flag
+
+#===================================
+# Command Line Argument Parsing
+#===================================
+
+# parse_args: Process command line arguments and set global configuration
+# Usage: parse_args "$@"
+# Parameters: Command line arguments array
 parse_args() {
-    COMPARE_MODE="current"  
-    COMPARE_BRANCH="develop"     
+    COMPARE_MODE="current"    # Mode: 'current' for unstaged, 'branch' for branch comparison
+    COMPARE_BRANCH="develop"  # Default branch to compare against
+    
     while [[ $# -gt 0 ]]; do
         case $1 in
             --mode|-m)
@@ -24,6 +47,7 @@ parse_args() {
                 shift 2
                 ;;
             --temperature|-t)
+                # Validate temperature is between 0 and 2
                 if [[ "$2" =~ ^[0-9]*\.?[0-9]+$ ]] && (( $(echo "$2 >= 0" | bc -l) )) && (( $(echo "$2 <= 2" | bc -l) )); then
                     TEMPERATURE="$2"
                 else
@@ -54,18 +78,30 @@ parse_args() {
     done
 }
 
-# Debug logging function with timestamp and component
+#===================================
+# Logging Functions
+#===================================
+
+# debug_log: Output debug messages if debug mode is enabled
+# Parameters:
+#   $1: Message to log
+#   $2: Component name (optional, defaults to MAIN)
 debug_log() {
     if [ "$DEBUG" = true ]; then
         local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
-        local component="${2:-MAIN}"  # Default component is MAIN if not specified
+        local component="${2:-MAIN}"
         local message="[$timestamp][$component] $1"
         echo "$message" >&2
         echo "$message" >> "$WORKING_DIR/git-review-debug.log"
     fi
 }
 
-# Function to check if Ollama is running
+#===================================
+# Ollama Integration
+#===================================
+
+# check_ollama: Verify Ollama service is running
+# Exits with error if Ollama is not accessible
 check_ollama() {
     if ! curl -s http://localhost:11434/api/tags >/dev/null; then
         echo "Error: Ollama is not running. Please start Ollama first."
@@ -73,52 +109,10 @@ check_ollama() {
     fi
 }
 
-# Function to get list of changed files based on comparison mode
-get_changed_files() {
-    cd "$WORKING_DIR" || exit 1
-    debug_log "Getting changed files in: $WORKING_DIR (mode: $COMPARE_MODE)"
-    
-    if [ "$COMPARE_MODE" = "current" ]; then
-        # Add all new files to git's index (without staging them)
-        git add -N .
-        
-        # Use git status --porcelain to get both modified and untracked files
-        git status --porcelain | grep -E '^[?M ][ M] ' | sed 's/^...//'
-    else
-        # Compare with specified branch
-        git diff --name-only "$COMPARE_BRANCH"...HEAD
-    fi | grep -v -E '(package-lock.json|yarn.lock|pnpm-lock.yaml|Gemfile.lock|poetry.lock)$' | \
-        while read -r file; do
-            if [ -f "$file" ] && ! git check-ignore -q "$file"; then
-                debug_log "Found file to review: $file"
-                echo "$file"
-            fi
-        done
-}
-
-# Function to get diff for a specific file
-get_file_diff() {
-    local file="$1"
-    cd "$WORKING_DIR" || exit 1
-    debug_log "Getting diff for file: $file"
-    
-    if [ "$COMPARE_MODE" = "current" ]; then
-        if git ls-files --error-unmatch "$file" >/dev/null 2>&1; then
-            git diff "$file"
-        else
-            # File is untracked, show entire file as new
-            echo "diff --git a/$file b/$file"
-            echo "new file mode 100644"
-            echo "--- /dev/null"
-            echo "+++ b/$file"
-            echo "@@ -0,0 +1,$(wc -l < "$file") @@"
-            sed 's/^/+/' "$file"
-        fi
-    else
-        git diff "$COMPARE_BRANCH"...HEAD -- "$file"
-    fi
-}
-
+# query_ollama: Send code diff to Ollama for review
+# Parameters:
+#   $1: Git diff content to review
+# Returns: AI-generated review comments or "N/A" if no issues found
 query_ollama() {
     local diff="$1"
     local prompt="You are a code reviewer analyzing a git diff. You must follow these response rules exactly:
@@ -156,8 +150,70 @@ Here's the diff to review:\n\n$diff"
     echo "$response"
 }
 
+#===================================
+# Git Operations
+#===================================
 
-# Function to generate markdown report
+# get_changed_files: Get list of files to review based on comparison mode
+# Returns: List of file paths, one per line
+get_changed_files() {
+    cd "$WORKING_DIR" || exit 1
+    debug_log "Getting changed files in: $WORKING_DIR (mode: $COMPARE_MODE)"
+    
+    if [ "$COMPARE_MODE" = "current" ]; then
+        # Add all new files to git's index (without staging them)
+        git add -N .
+        
+        # Get both modified and untracked files
+        git status --porcelain \
+        | grep -E '^[MARC? ][ MARC?] ' \
+        | sed 's/^...//'
+    else
+        # Compare with specified branch
+        git diff --name-only "$COMPARE_BRANCH"...HEAD
+    fi | grep -v -E '(package-lock.json|yarn.lock|pnpm-lock.yaml|Gemfile.lock|poetry.lock|review_results.json|review_results.md|.gitignore)$' | \
+        while read -r file; do
+            if [ -f "$file" ] && ! git check-ignore -q "$file"; then
+                debug_log "Found file to review: $file"
+                echo "$file"
+            fi
+        done
+}
+
+# get_file_diff: Generate git diff for a specific file
+# Parameters:
+#   $1: File path to get diff for
+# Returns: Git diff output or generated diff for new files
+get_file_diff() {
+    local file="$1"
+    cd "$WORKING_DIR" || exit 1
+    debug_log "Getting diff for file: $file"
+    
+    if [ "$COMPARE_MODE" = "current" ]; then
+        if git ls-files --error-unmatch "$file" >/dev/null 2>&1; then
+            # File is tracked, get normal diff
+            git diff "$file"
+        else
+            # File is untracked, show entire file as new
+            echo "diff --git a/$file b/$file"
+            echo "new file mode 100644"
+            echo "--- /dev/null"
+            echo "+++ b/$file"
+            echo "@@ -0,0 +1,$(wc -l < "$file") @@"
+            sed 's/^/+/' "$file"
+        fi
+    else
+        git diff "$COMPARE_BRANCH"...HEAD -- "$file"
+    fi
+}
+
+#===================================
+# Report Generation
+#===================================
+
+# generate_markdown: Convert JSON results to markdown format
+# Parameters:
+#   $1: Path to JSON file containing review results
 generate_markdown() {
     local json_file="$1"
     local markdown_file="${json_file%.json}.md"
@@ -172,29 +228,34 @@ generate_markdown() {
     curl -s http://localhost:11434/api/generate -d "{
         \"model\": \"$OLLAMA_MODEL\",
         \"prompt\": $(echo "$prompt" | jq -R -s .),
-        \"stream\": false,
-        \"stop\": [\"<think></think>\"]
+        \"stream\": false
     }" | jq -r '.response' > "$markdown_file"
     
     echo "Markdown report generated: $markdown_file"
 }
 
-# Main execution
+#===================================
+# Main Execution
+#===================================
+
+# main: Primary execution flow
+# Parameters:
+#   Command line arguments array
 main() {
     # Parse command line arguments
     parse_args "$@"
     
-    # Store original directory
+    # Store working directory
     local original_dir="$PWD"
     WORKING_DIR="$(pwd)"
     
-    # Check if we're in a git repository
+    # Validate environment
     if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "Error: Not in a git repository"
         exit 1
     fi
     
-    # Check if required commands are available
+    # Check dependencies
     for cmd in curl jq git; do
         if ! command -v "$cmd" >/dev/null; then
             echo "Error: Required command '$cmd' is not installed"
@@ -202,10 +263,9 @@ main() {
         fi
     done
     
-    # Check if Ollama is running
     check_ollama
     
-    # Initialize JSON array for results
+    # Initialize results file
     echo "[]" > "$REVIEW_FILE"
     
     # Process each changed file
@@ -213,14 +273,12 @@ main() {
         if [ -n "$file" ]; then
             echo "Reviewing: $file"
             
-            # Get diff for the file
             diff=$(get_file_diff "$file")
             
             if [ -n "$diff" ]; then
-                # Get AI review
                 review=$(query_ollama "$diff")
                 
-                # Add to JSON array
+                # Add review to JSON results
                 jq --arg file "$file" \
                    --arg review "$review" \
                    --arg timestamp "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
@@ -233,12 +291,12 @@ main() {
         fi
     done < <(get_changed_files)
     
-    # Generate markdown report
+    # Generate final report
     generate_markdown "$REVIEW_FILE"
     
-    # Return to original directory
+    # Restore original directory
     cd "$original_dir" || exit 1
 }
 
-# Run the script
+# Start execution
 main "$@"
