@@ -20,6 +20,8 @@ OLLAMA_MODEL="codellama"      # AI model to use for code review
 TEMPERATURE=0.7               # Model temperature for response generation
 REVIEW_FILE="review_results.json"  # Output file for review results
 DEBUG=false                   # Debug mode flag
+MODELFILE=""                 # Path to custom Modelfile
+SYSTEM_PROMPT=""            # Custom system prompt from Modelfile
 
 #===================================
 # Command Line Argument Parsing
@@ -34,6 +36,10 @@ parse_args() {
     
     while [[ $# -gt 0 ]]; do
         case $1 in
+            --modelfile|-mf)
+                MODELFILE="$2"
+                shift 2
+                ;;
             --mode|-m)
                 COMPARE_MODE="$2"
                 shift 2
@@ -63,6 +69,7 @@ parse_args() {
             --help|-h)
                 echo "Usage: git-review [options]"
                 echo "Options:"
+                echo "  --modelfile, -mf    Path to custom Modelfile with review prompt"
                 echo "  --mode, -m          Compare mode: 'current' (unstaged changes) or 'branch' (compare with branch)"
                 echo "  --branch, -b        Branch to compare against (default: develop)"
                 echo "  --model, -ml        Ollama model to use (default: codellama)"
@@ -96,6 +103,41 @@ debug_log() {
     fi
 }
 
+# load_modelfile: Load and validate custom Modelfile
+# Parameters:
+#   $1: Path to Modelfile
+load_modelfile() {
+    local modelfile="$1"
+    
+    if [ ! -f "$modelfile" ]; then
+        echo "Error: Modelfile not found at $modelfile"
+        exit 1
+    fi
+    
+    debug_log "Loading Modelfile: $modelfile"
+    
+    # Extract system prompt from Modelfile
+    # This handles multi-line SYSTEM blocks with triple quotes
+    SYSTEM_PROMPT=$(awk '/^SYSTEM/{p=1;next} /^"""$/{if(p){exit}} p{print}' "$modelfile")
+    
+    if [ -z "$SYSTEM_PROMPT" ]; then
+        echo "Error: No SYSTEM prompt found in Modelfile"
+        exit 1
+    fi
+    
+    # Create custom model with Modelfile
+    local model_name="${OLLAMA_MODEL}-custom"
+    if ! ollama create "$model_name" -f "$modelfile" 2>/dev/null; then
+        echo "Error: Failed to create custom model from Modelfile"
+        exit 1
+    fi
+    OLLAMA_MODEL="$model_name"
+    
+    debug_log "Created custom model: $OLLAMA_MODEL"
+}
+
+
+
 #===================================
 # Ollama Integration
 #===================================
@@ -115,7 +157,13 @@ check_ollama() {
 # Returns: AI-generated review comments or "N/A" if no issues found
 query_ollama() {
     local diff="$1"
-    local prompt="You are a code reviewer analyzing a git diff. You must follow these response rules exactly:
+    local prompt
+    
+    if [ -n "$SYSTEM_PROMPT" ]; then
+        prompt="$SYSTEM_PROMPT\n\nHere's the diff to review:\n\n$diff"
+    else
+        # Fall back to default prompt if no Modelfile is provided
+        prompt="You are a code reviewer analyzing a git diff. You must follow these response rules exactly:
 
 RESPONSE FORMAT:
 1. If there are ANY issues (security, performance, best practices, or code quality): 
@@ -127,16 +175,8 @@ RESPONSE FORMAT:
    - Respond with ONLY the exact text: N/A
    - No other text or explanation
 
-Example good responses:
-- For issues:
-• useState dependency missing in useEffect - could cause stale closures
-• Array index used as key - may cause rendering issues
-• Inline styles reduce performance - should use CSS classes
-
-- For no issues:
-N/A
-
 Here's the diff to review:\n\n$diff"
+    fi
     
     debug_log "Querying Ollama (model: $OLLAMA_MODEL, temperature: $TEMPERATURE)"
     
@@ -264,6 +304,11 @@ main() {
     done
     
     check_ollama
+    
+    # Load custom Modelfile if provided
+    if [ -n "$MODELFILE" ]; then
+        load_modelfile "$MODELFILE"
+    fi
     
     # Initialize results file
     echo "[]" > "$REVIEW_FILE"
