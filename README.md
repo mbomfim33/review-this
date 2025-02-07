@@ -68,7 +68,7 @@ You can customize the review behavior by creating a Modelfile with your own prom
 ```modelfile
 FROM codellama
 
-SYSTEM <<EOT
+SYSTEM """
 You are a code reviewer analyzing a git diff. Please evaluate the code for:
 - Security vulnerabilities
 - Performance issues
@@ -86,7 +86,7 @@ Each issue should include:
 - Issue description
 - Location or context
 - Recommended fix
-EOT
+"""
 ```
 
 To use a custom Modelfile:
